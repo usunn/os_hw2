@@ -101,23 +101,88 @@ int load_process(FILE *fp, process *proc) {
 // 페이지 폴트 발생 시 프레임을 할당하고, 이미 할당된 경우 참조 횟수만 증가시킨다.
 // 모든 프로세스의 참조가 끝날 때까지 반복한다.
 void simulate(process *procs, int proc_count) {
-
     printf("simulate() start\n");
 
-    // 여기에 코드 작성
+    /* 모든 프로세스 중 가장 긴 reference 길이 계산 */
+    int max_len = 0;
+    for (int i = 0; i < proc_count; i++)
+        if (procs[i].ref_len > max_len) max_len = procs[i].ref_len;
 
+    /* 인덱스 라운드-로빈 */
+    for (int idx = 0; idx < max_len; idx++) {
+        for (int pidx = 0; pidx < proc_count; pidx++) {
+            process *p = &procs[pidx];
+            if (idx >= p->ref_len) continue;            // 해당 프로세스는 끝
 
+            unsigned char page = p->references[idx];    // 접근할 페이지
+            pte *entry        = &p->page_table[page];   // PTE 위치
+
+            if (entry->vflag == PAGE_VALID) {
+                /* HIT */
+                entry->ref++;
+                printf("[PID %02d IDX:%03d] %03d Page access: Frame %03d\n",
+                       p->pid, idx, page, entry->frame);
+            } else {
+                /* PAGE FAULT */
+                int frame = allocate_frame();
+                if (frame == -1) {
+                    fprintf(stderr,
+                            "Out of physical frames! Simulation aborted.\n");
+                    exit(1);
+                }
+                entry->frame = (unsigned char)frame;
+                entry->vflag = PAGE_VALID;
+                entry->ref   = 1;
+                p->page_faults++;
+
+                printf("[PID %02d IDX:%03d] %03d Page access: PF -> "
+                       "Allocated Frame %03d\n",
+                       p->pid, idx, page, frame);
+            }
+            p->ref_count++;
+        }
+    }
     printf("simulate() end\n");
 }
 
 // 각 프로세스의 페이지 테이블 상태와 통계를 출력한다.
 // 페이지 폴트, 총 참조 횟수, 각 페이지별 프레임 매핑 및 참조 횟수를 보여준다.
 void print_page_tables(process *procs, int proc_count) {
+    int total_pf   = 0;      /* 모든 프로세스의 page-fault 합계           */
+    int total_ref  = 0;      /* 모든 프로세스의 reference 합계            */
 
+    for (int i = 0; i < proc_count; i++) {
+        process *p = &procs[i];
 
+        /* 프로세스가 실제 데이터용으로 할당한 프레임 개수 계산 */
+        int alloc_frames = 0;
+        for (int pg = 0; pg < VAS_PAGES; pg++)
+            if (p->page_table[pg].vflag == PAGE_VALID) alloc_frames++;
 
+        printf("\n** Process %03d: Allocated Frames=%03d "
+               "PageFaults/References=%03d/%03d\n",
+               p->pid, alloc_frames, p->page_faults, p->ref_count);
 
+        /* 상세 매핑 출력 */
+        for (int pg = 0; pg < VAS_PAGES; pg++) {
+            pte *entry = &p->page_table[pg];
+            if (entry->vflag == PAGE_VALID) {
+                printf("[PAGE] %03d -> [FRAME] %03d REF=%03d\n",
+                       pg, entry->frame, entry->ref);
+            }
+        }
 
+        /* 전체 합계 누적 */
+        total_pf  += p->page_faults;
+        total_ref += p->ref_count;
+    }
+
+    /* ------ 전체 요약 ------ */
+    /* allocated_frame_count 전역변수엔
+       (모든 page table 프레임 + 데이터 프레임)이 저장돼 있음 */
+    printf("Total: Allocated Frames=%03d "
+           "Page Faults/References=%03d/%03d\n\n",
+           allocated_frame_count, total_pf, total_ref);
 }
 
 // 메인 함수: 표준 입력에서 프로세스 정보를 읽고, 시뮬레이션을 수행한 뒤 결과를 출력한다.
