@@ -72,25 +72,140 @@ int load_process(FILE *fp, process *proc) {
         return -1;
     return 1;
 }
-
 void simulate(process *procs, int proc_count) {
-
     printf("simulate() start\n");
-    
-    //여기에 코드 작성
-    
-    
+
+    int max_ref = 0;
+    for (int i = 0; i < proc_count; i++) {
+        if (procs[i].ref_len > max_ref)
+            max_ref = procs[i].ref_len;
+    }
+
+    for (int idx = 0; idx < max_ref; idx++) {
+        for (int i = 0; i < proc_count; i++) {
+            process *p = &procs[i];
+            if (idx >= p->ref_len) continue;
+
+            unsigned char page = p->references[idx];
+            p->ref_count++;
+
+            int l1_idx = page / L2_PT_ENTRIES;
+            int l2_idx = page % L2_PT_ENTRIES;
+
+            pte *l1_entry = &p->L1_page_table[l1_idx];
+
+            if (l1_entry->vflag == PAGE_INVALID) {
+                pte *l2_pt = allocate_pagetable_frame();
+                if (!l2_pt) {
+                    printf("Out of memory!!\n");
+                    return;
+                }
+                int l1_frame = (int)( ((unsigned char*)l2_pt - pas) / PAGESIZE );
+                l1_entry->vflag = PAGE_VALID;
+                l1_entry->frame = (unsigned char)l1_frame;
+                p->page_faults++;
+
+                int data_frame = allocate_frame();
+                if (data_frame == -1) {
+                    printf("Out of memory!!\n");
+                    return;
+                }
+
+                pte *l2_entry = &l2_pt[l2_idx];
+                l2_entry->vflag = PAGE_VALID;
+                l2_entry->frame = (unsigned char)data_frame;
+                l2_entry->ref = 1;
+                p->page_faults++;
+
+                printf("[PID %02d IDX:%03d] Page access %03d: (L1PT) PF -> Allocated Frame %03d(PTE %03d), (L2PT) PF -> Allocated Frame %03d\n",
+                       p->pid, idx, page, l1_frame, l1_idx, data_frame);
+            } else {
+                int l1_frame = l1_entry->frame;
+                pte *l2_pt = (pte*)&pas[l1_frame * PAGESIZE];
+                pte *l2_entry = &l2_pt[l2_idx];
+
+                if (l2_entry->vflag == PAGE_INVALID) {
+                    int data_frame = allocate_frame();
+                    if (data_frame == -1) {
+                        printf("Out of memory!!\n");
+                        return;
+                    }
+
+                    l2_entry->vflag = PAGE_VALID;
+                    l2_entry->frame = (unsigned char)data_frame;
+                    l2_entry->ref = 1;
+                    p->page_faults++;
+
+                    printf("[PID %02d IDX:%03d] Page access %03d: (L1PT) Frame %03d, (L2PT) PF -> Allocated Frame %03d\n",
+                           p->pid, idx, page, l1_frame, data_frame);
+                } else {
+                    l2_entry->ref++;
+                    printf("[PID %02d IDX:%03d] Page access %03d: (L1PT) Frame %03d, (L2PT) Frame %03d\n",
+                           p->pid, idx, page, l1_frame, l2_entry->frame);
+                }
+            }
+        }
+    }
 
     printf("simulate() end\n");
 }
 
-void print_page_tables(process *procs, int proc_count) {
-    
-    //여기에 코드 작성
 
-    
-    
+void print_page_tables(process *procs, int proc_count) {
+    int total_frames = allocated_frame_count;
+    int total_faults = 0;
+    int total_refs = 0;
+
+    for (int i = 0; i < proc_count; i++) {
+        process *p = &procs[i];
+        total_faults += p->page_faults;
+        total_refs += p->ref_count;
+
+        int proc_frames = 0;
+
+        printf("** Process %03d: Allocated Frames=", p->pid);
+
+        for (int l1 = 0; l1 < L1_PT_ENTRIES; l1++) {
+            pte *l1_entry = &p->L1_page_table[l1];
+            if (l1_entry->vflag == PAGE_INVALID) continue;
+
+            proc_frames++; // L2 page table 프레임
+            int l1_frame = l1_entry->frame;
+
+            pte *l2_pt = (pte*)&pas[l1_frame * PAGESIZE];
+            for (int l2 = 0; l2 < L2_PT_ENTRIES; l2++) {
+                pte *l2_entry = &l2_pt[l2];
+                if (l2_entry->vflag == PAGE_VALID) {
+                    proc_frames++;
+                }
+            }
+        }
+
+        printf("%03d PageFaults/References=%03d/%03d\n",
+               proc_frames, p->page_faults, p->ref_count);
+
+        for (int l1 = 0; l1 < L1_PT_ENTRIES; l1++) {
+            pte *l1_entry = &p->L1_page_table[l1];
+            if (l1_entry->vflag == PAGE_INVALID) continue;
+
+            int l1_frame = l1_entry->frame;
+            printf("(L1PT) [PTE] %03d -> [FRAME] %03d\n", l1, l1_frame);
+
+            pte *l2_pt = (pte*)&pas[l1_frame * PAGESIZE];
+            for (int l2 = 0; l2 < L2_PT_ENTRIES; l2++) {
+                pte *l2_entry = &l2_pt[l2];
+                if (l2_entry->vflag == PAGE_VALID) {
+                    int page_num = l1 * L2_PT_ENTRIES + l2;
+                    printf("(L2PT) [PAGE] %03d -> [FRAME] %03d REF=%03d\n",
+                           page_num, l2_entry->frame, l2_entry->ref);
+                }
+            }
+        }
     }
+
+    printf("Total: Allocated Frames=%03d Page Faults/References=%03d/%03d\n",
+           total_frames, total_faults, total_refs);
+}
 
 int main() {
     process procs[MAX_PROCESSES];
